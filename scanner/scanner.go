@@ -60,6 +60,9 @@ func (s *TicketScanner) Start(ctx context.Context) error {
 	s.runningWg.Add(1)
 	defer s.cleanup()
 
+	// Establish initial session before first scan
+	s.refreshSession()
+
 	// Initial ticket scan
 	s.fetchAndProcessTickets()
 
@@ -109,6 +112,15 @@ func (s *TicketScanner) UpdateConfig(conf TicketScannerConfig) {
 	s.config = conf
 }
 
+// refreshSession visits the Twickets homepage to establish a session cookie.
+func (s *TicketScanner) refreshSession() {
+	httpClient := s.config.TwicketsClient.Client()
+	resp, err := httpClient.Get(twigots.TwicketsURL)
+	if err == nil && resp != nil {
+		_ = resp.Body.Close()
+	}
+}
+
 func (s *TicketScanner) fetchAndProcessTickets() {
 	// Lock config while fetching and processing tickets,
 	// as the config is used throughout this method
@@ -133,8 +145,23 @@ func (s *TicketScanner) fetchAndProcessTickets() {
 		},
 	)
 	if err != nil {
-		slog.Error(err.Error())
-		return
+		if strings.Contains(err.Error(), "401") {
+			slog.Info("Session expired, refreshing and retrying...")
+			s.refreshSession()
+			fetchedListings, err = s.config.TwicketsClient.FetchTicketListings(
+				context.Background(),
+				twigots.FetchTicketListingsInput{
+					Country:       twigots.CountryUnitedKingdom,
+					CreatedBefore: time.Now(),
+					CreatedAfter:  s.latestTicketTime,
+					MaxNumber:     numTickets,
+				},
+			)
+		}
+		if err != nil {
+			slog.Error(err.Error())
+			return
+		}
 	}
 
 	slog.Debug("Fetched tickets.", "numNewTickets", len(fetchedListings))
